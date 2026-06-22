@@ -31,6 +31,11 @@ THE SOFTWARE.
 
 import typing
 
+import pymbolic.primitives as p
+
+if not hasattr(p, "ExpressionNode"):
+    p.ExpressionNode = p.Expression
+
 from .bandit.general_thermochem import BaseMechanism
 from .bandit.impl.cantera import CanteraMechanism
 from .codegen import CodeGenerator, CodeGenerationOptions  # noqa: F401

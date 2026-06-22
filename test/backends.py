@@ -22,7 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import cantera as ct
 import importlib
 import pathlib
 import typing
@@ -36,6 +35,11 @@ from pyrometheus.codegen.python import PythonCodeGenerator
 from pyrometheus.codegen.cpp import CppCodeGenerator
 from pyrometheus.codegen.fortran import FortranCodeGenerator
 
+try:
+    import cantera as ct
+except ImportError:
+    ct = None
+    
 try:
     import jax
     import jax.numpy as jnp
