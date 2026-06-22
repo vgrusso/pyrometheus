@@ -33,9 +33,6 @@ import typing
 
 import pymbolic.primitives as p
 
-if not hasattr(p, "ExpressionNode"):
-    p.ExpressionNode = p.Expression
-
 from .bandit.general_thermochem import BaseMechanism
 from .bandit.impl.cantera import CanteraMechanism
 from .codegen import CodeGenerator, CodeGenerationOptions  # noqa: F401
@@ -44,6 +41,8 @@ from .codegen.python_bandit import PythonBanditCodeGenerator
 from .codegen.cpp import CppCodeGenerator
 from .codegen.fortran import FortranCodeGenerator
 
+if not hasattr(p, "ExpressionNode"):
+    p.ExpressionNode = p.Expression
 
 def get_code_generators() -> typing.Dict[str, CodeGenerator]:
     return {

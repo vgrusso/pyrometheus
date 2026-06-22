@@ -35,9 +35,6 @@ class BaseMechanism:
     mass_action_rates: np.ndarray = np.empty(
         shape=(0,), dtype=p.ExpressionNode
     )
-    # species_prod_rates: np.ndarray = np.empty(
-    #     shape=(0,), type=p.ExpressionNode
-    # )
     species_prod_rates: np.ndarray = np.empty(
         shape=(0,), dtype=object
     )

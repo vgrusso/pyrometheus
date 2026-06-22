@@ -1,4 +1,4 @@
-# Notes: Building Mutation++ Python Bindings on HPC
+# Notes: Building Mutation++ on HPC
 
 ## Install nanobind
 
@@ -44,7 +44,7 @@ $HOME/.local/nanobind/cmake/nanobind-config-version.cmake
 
 ## Configure Mutation++
 
-Load this CMake on ISAAC 
+Load this CMake
 
 ```bash
 module load cmake/3.30.5-gcc
