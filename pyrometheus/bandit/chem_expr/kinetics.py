@@ -1,7 +1,7 @@
 import numpy as np
 import pymbolic.primitives as p
 from pymbolic import substitute
-from dataclasses import dataclass, field, InitVar
+from dataclasses import dataclass, field
 from typing import Union, Optional, List, Tuple
 
 
@@ -37,12 +37,15 @@ class RateCoefficient:
 
 @dataclass
 class ArrheniusCoefficient(RateCoefficient):
-    def __post_init__(self,):
+    def __post_init__(self):
         self.a = p.Variable("a")[self.reaction_index]
         self.b = p.Variable("b")[self.reaction_index]
         self.t_a = p.Variable("t_a")[self.reaction_index]
-        self.expr = exp(self.a + self.b * log(_temp) -
-                        self.t_a / _temp)
+        self.expr = exp(
+            self.a
+            + self.b * log(_temp)
+            - self.t_a / _temp
+        )
 
         if self.params:
             self.hardcore_parameters(self.params)

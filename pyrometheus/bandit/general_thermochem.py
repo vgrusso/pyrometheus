@@ -1,11 +1,12 @@
 from __future__ import annotations
 import numpy as np
 import pymbolic.primitives as p
-from dataclasses import field
 from typing import List, Union, Tuple, ForwardRef
 from pyrometheus.bandit.chem_expr.kinetics import RateCoefficient
-from pyrometheus.bandit.chem_expr.thermo import (SpeciesNASAThermo,
-                                                 SpeciesVibrationalThermo)
+from pyrometheus.bandit.chem_expr.thermo import (
+    SpeciesNASAThermo,
+    SpeciesVibrationalThermo,
+)
 
 
 class BaseNamespace:
@@ -29,15 +30,11 @@ class BaseMechanism:
     pyro_generated: bool = False
     pyro_compiled: bool = False
     pyro_code: str = None
-    pyro_engine: ForwardRef('Thermochemistry') = None  # noqa: F821
+    pyro_engine: ForwardRef("Thermochemistry") = None  # noqa: F821
     rate_coeffs: np.ndarray = np.empty(shape=(0,), dtype=RateCoefficient)
     equil_constants: np.ndarray = np.empty(shape=(0,), dtype=p.ExpressionNode)
-    mass_action_rates: np.ndarray = np.empty(
-        shape=(0,), dtype=p.ExpressionNode
-    )
-    species_prod_rates: np.ndarray = np.empty(
-        shape=(0,), dtype=object
-    )
+    mass_action_rates: np.ndarray = np.empty(shape=(0,), dtype=p.ExpressionNode)
+    species_prod_rates: np.ndarray = np.empty(shape=(0,), dtype=object)
     species_nasa_thermo_polynomials: np.ndarray = np.empty(
         shape=(0,), dtype=SpeciesNASAThermo
     )
@@ -89,8 +86,7 @@ class BaseMechanism:
         """
         raise NotImplementedError
 
-    def participation_set(self,
-                          species_id: Union[int, str]) -> Tuple[List[int]]:
+    def participation_set(self, species_id: Union[int, str]) -> Tuple[List[int]]:
         """:return: A tuple of lists of indices for the reactions in
         which the species with ID *species_id* participates. The first
         list in the tuple corresponds to reactions where *specie_id*
@@ -100,9 +96,9 @@ class BaseMechanism:
         """
         raise NotImplementedError
 
-    def make_rate_coefficient(self,
-                              reaction_index,
-                              hardcode_params) -> RateCoefficient:
+    def make_rate_coefficient(
+        self, reaction_index, hardcode_params
+    ) -> RateCoefficient:
         """:return: A rate coefficient expression as a
         :class:`chem_expr.kinetics.RateCoefficient`.
         """
@@ -114,12 +110,14 @@ class BaseMechanism:
         """
         raise NotImplementedError
 
-    def make_species_vibrational_thermo(self, species_index) -> SpeciesVibrationalThermo:
+    def make_species_vibrational_thermo(
+        self, species_index
+    ) -> SpeciesVibrationalThermo:
         """:return: Harmonic-oscillator expressions as a
         "class:`chem_expr.thermo.SpeciesVibrationalThermo`
         """
         raise NotImplementedError
-    
+
     def make_mass_action_rate(self, reaction_index, hardcode_params=True):
         """
         :returns: mass action rate for *reaction_index* as a
@@ -129,7 +127,7 @@ class BaseMechanism:
         :class:`pymbolic.primitives.Product` of reactant
         concentrations.
         """
-        conc = p.Variable('concentrations')
+        conc = p.Variable("concentrations")
         indices = self.reactants(reaction_index)
         stoich = self.stoichiometric_coefficients(reaction_index)
         rate_coeff, param_vals = self.make_rate_coefficient(
@@ -137,13 +135,15 @@ class BaseMechanism:
         )
         if isinstance(rate_coeff, RateCoefficient):
             if not hardcode_params:
-                self.param_vals = np.vstack(
-                    (self.param_vals, param_vals)
-                ) if self.param_vals.size else param_vals
+                self.param_vals = (
+                    np.vstack((self.param_vals, param_vals))
+                    if self.param_vals.size
+                    else param_vals
+                )
 
-            return rate_coeff.expr * np.prod([
-                conc[i] ** nu for i, nu in zip(indices, stoich)
-            ])
+            return rate_coeff.expr * np.prod(
+                [conc[i] ** nu for i, nu in zip(indices, stoich)]
+            )
         else:
             return 0
 
@@ -157,35 +157,36 @@ class BaseMechanism:
         for irxn in range(self.num_reactions):
             self.rate_coeffs = np.append(
                 self.rate_coeffs,
-                self.make_rate_coefficient(irxn, hardcode_params)[0]
+                self.make_rate_coefficient(irxn, hardcode_params)[0],
             )
             self.mass_action_rates = np.append(
-                self.mass_action_rates,
-                self.make_mass_action_rate(irxn)
+                self.mass_action_rates, self.make_mass_action_rate(irxn)
             )
 
         assert not self.species_prod_rates.size
         for isp in range(self.num_species):
             self.species_prod_rates = np.append(
                 self.species_prod_rates,
-                self.make_species_production_rate(isp,)
+                self.make_species_production_rate(
+                    isp,
+                ),
             )
 
-    def make_thermo(self,):
+    def make_thermo(
+        self,
+    ):
         # Make NASA thermo first
         assert not self.species_thermo_polynomials.size
         for isp in range(self.num_species):
             self.species_thermo_polynomials = np.append(
-                self.species_thermo_polynomials,
-                self.make_species_nasa_thermo(isp)
+                self.species_thermo_polynomials, self.make_species_nasa_thermo(isp)
             )
 
         # Make equilibrium constnats
         assert not self.equil_constants.size
         for irxn in range(self.num_reactions):
             self.equil_constants = np.append(
-                self.equil_constants,
-                self.make_equilibrium_constant(irxn)
+                self.equil_constants, self.make_equilibrium_constant(irxn)
             )
 
         # Now check for vibrational nonequlibrium
@@ -193,7 +194,7 @@ class BaseMechanism:
             for isp in range(self.num_species):
                 self.species_vib_thermo_expressions = np.append(
                     self.species_vib_thermo_expressions,
-                    self.make_species_vibrational_thermo(isp)
+                    self.make_species_vibrational_thermo(isp),
                 )
 
     def make_pyro(self, pyro_np=np):
@@ -201,10 +202,8 @@ class BaseMechanism:
         Generate the computational engine using Pyrometheus.
         """
         from minipyro.codegen.python import get_thermochem_class
-        pyro_class, self.pyro_code = get_thermochem_class(
-            self,
-            self.hardcode_params
-        )
+
+        pyro_class, self.pyro_code = get_thermochem_class(self, self.hardcode_params)
         self.pyro_engine = pyro_class(pyro_np)
         self.pyro_generated = True
 
@@ -219,11 +218,11 @@ class BaseMechanism:
         return self.pyro_graph.evaluate(*args)
 
     def print_pyro_code(self):
-        print(20*"==" + "Pyro Code" + 20*"==")
+        print(20 * "==" + "Pyro Code" + 20 * "==")
         print(self.pyro_code)
-        print(40*"==")
+        print(40 * "==")
 
     def print_dev_code(self):
-        print(20*"==" + "CUDA Code" + 20*"==")
+        print(20 * "==" + "CUDA Code" + 20 * "==")
         print(self.pyro_graph.cuda_code)
-        print(40*"==")
+        print(40 * "==")

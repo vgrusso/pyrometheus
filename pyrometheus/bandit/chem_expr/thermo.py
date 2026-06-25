@@ -212,7 +212,7 @@ def _(poly_params: PolynomialParameters):
 @singledispatch
 def nasa_poly_gibbs_expr(poly_params):
     raise TypeError("unexpected argument type in poly_to_gibbs_expr: "
-                    f"{type(poly)}")
+                    f"{type(poly_params)}")
 
 
 @nasa_poly_gibbs_expr.register

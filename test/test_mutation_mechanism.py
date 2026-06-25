@@ -40,15 +40,19 @@ def mech():
 
 # --- Construction / setup ---
 
+
 def test_constructs(mech):
     assert mech is not None
+
 
 def test_namespace_has_mixture(mech):
     assert hasattr(mech, "namespace")
     assert hasattr(mech.namespace, "mix")
 
+
 def test_mutation_data_directory_is_set(mech):
     assert mpp.GlobalOptions.dataDirectory() == os.environ["MUTATION_DB"]
+
 
 def test_air5_xml_exists():
     data_dir = os.environ["MUTATION_DB"]
@@ -58,11 +62,14 @@ def test_air5_xml_exists():
 
 # --- Species metadata ---
 
+
 def test_num_species(mech):
     assert mech.num_species == 5
 
+
 def test_species_names(mech):
     assert mech.species_names == ["N", "O", "NO", "N2", "O2"]
+
 
 def test_species_names_match_underlying_mix(mech):
     mix_species_names = [
@@ -71,13 +78,16 @@ def test_species_names_match_underlying_mix(mech):
     ]
     assert mech.species_names == mix_species_names
 
+
 def test_species_index_name_roundtrip(mech):
     for name in mech.species_names:
         idx = mech.species_index(name)
         assert mech.species_name(idx) == name
 
+
 def test_molecular_weights_shape(mech):
     assert mech.molecular_weights.shape == (mech.num_species,)
+
 
 def test_molecular_weights_are_positive(mech):
     assert np.all(np.isfinite(mech.molecular_weights))
@@ -86,11 +96,14 @@ def test_molecular_weights_are_positive(mech):
 
 # --- Reaction metadata currently exposed by Mutation++ ---
 
+
 def test_num_reactions(mech):
     assert mech.num_reactions == 5
 
+
 def test_num_reactions_matches_underlying_mix(mech):
     assert mech.num_reactions == mech.namespace.mix.nReactions()
+
 
 def test_num_species_matches_underlying_mix(mech):
     assert mech.num_species == mech.namespace.mix.nSpecies()

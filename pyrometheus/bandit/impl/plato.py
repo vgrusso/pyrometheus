@@ -37,8 +37,8 @@ _temp_map = {
     "translational": Variable("temperature"),
     "electron": Variable("temperature")[-1],
     "geometric_ttv": Variable("sqrt")(
-        Variable("temperature")[0] *
-        Variable("temperature")[1]
+        Variable("temperature")[0]
+        * Variable("temperature")[1]
     )
 }
 
@@ -364,14 +364,21 @@ class PlatoMechanism(BaseMechanism):
         return fwd_set, rev_set
 
     def production_balance(
-            self, species_index: int
+        self, species_index: int
     ) -> Tuple[Tuple[List[int], List[int]], Tuple[List[int], List[int]]]:
         fwd_set, rev_set = self.participation_set(species_index)
-        # Count actual occurrences: homoatomic dissociation (e.g. N2->N+N) gives stoich 2
-        stoich_fwd = [self._reactions[r]["reactant_species"].count(species_index)
-                      for r in fwd_set]
-        stoich_rev = [self._reactions[r]["product_species"].count(species_index)
-                      for r in rev_set]
+
+        # Count actual occurrences. Homoatomic dissociation,
+        # e.g. N2 -> N + N, gives stoichiometric coefficient 2.
+        stoich_fwd = [
+            self._reactions[r]["reactant_species"].count(species_index)
+            for r in fwd_set
+        ]
+        stoich_rev = [
+            self._reactions[r]["product_species"].count(species_index)
+            for r in rev_set
+        ]
+
         return (fwd_set, rev_set), (stoich_fwd, stoich_rev)
 
     # }}}
@@ -453,7 +460,7 @@ class PlatoMechanism(BaseMechanism):
         t_var = (
             Variable("temperature") if self.num_temp == 1 else
             (
-                Variable("temperature")[-1] if sp_name == 'em' else
+                Variable("temperature")[-1] if sp_name == "em" else
                 Variable("temperature")[0]
             )
         )

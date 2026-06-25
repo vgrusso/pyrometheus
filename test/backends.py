@@ -39,7 +39,7 @@ try:
     import cantera as ct
 except ImportError:
     ct = None
-    
+
 try:
     import jax
     import jax.numpy as jnp
@@ -93,17 +93,17 @@ class PythonBackend(Backend, PythonCodeGenerator):
                 """
 
                 from numbers import Number
+
                 # Needed to play nicely with Jax, which frequently creates
                 # arrays of shape () when handed numbers
                 all_numbers = all(
                     isinstance(e, Number)
                     or (isinstance(e, self.pyro_np.ndarray) and e.shape == ())
-                    for e in res_list)
+                    for e in res_list
+                )
 
                 if all_numbers:
-                    return self.pyro_np.array(
-                        res_list, dtype=self.pyro_np.float64
-                    )
+                    return self.pyro_np.array(res_list, dtype=self.pyro_np.float64)
 
                 result = self.pyro_np.empty_like(
                     self.pyro_np.array(res_list),
@@ -125,12 +125,15 @@ class PythonBackend(Backend, PythonCodeGenerator):
                 """
                 # Wrap norm for scalars
                 from numbers import Number
+
                 if isinstance(argument, Number):
                     return self.pyro_np.abs(argument)
                 # Needed to play nicely with Jax, which frequently creates
                 # arrays of shape () when handed numbers
-                if (isinstance(argument, self.pyro_np.ndarray)
-                        and argument.shape == ()):
+                if (
+                    isinstance(argument, self.pyro_np.ndarray)
+                    and argument.shape == ()
+                ):
                     return self.pyro_np.abs(argument)
                 return self.pyro_np.linalg.norm(argument, normord)
 
@@ -159,7 +162,7 @@ class FortranBackend(Backend, FortranCodeGenerator):
 BACKENDS: typing.Dict[str, Backend] = {
     CppBackend.get_name(): CppBackend,
     FortranBackend.get_name(): FortranBackend,
-    PythonBackend.get_name(): PythonBackend
+    PythonBackend.get_name(): PythonBackend,
 }
 
 
@@ -185,11 +188,9 @@ class Pyrometheus:
         """
         self.backend = backend
         self.pyro = self.backend.extract_interface(
-            importlib.import_module(
-                f"libpyro_{self.backend.get_name()}_{mechname}"
-            ),
+            importlib.import_module(f"libpyro_{self.backend.get_name()}_{mechname}"),
             mechname,
-            user_np
+            user_np,
         )
 
     def __getattr__(self, name: str):
@@ -201,8 +202,9 @@ class Pyrometheus:
         return getattr(self.pyro, name)
 
 
-def pyro_init(mechname: str, user_np,
-              request: pytest.FixtureRequest) -> (ct.Solution, Pyrometheus):
+def pyro_init(
+    mechname: str, user_np, request: pytest.FixtureRequest
+) -> (ct.Solution, Pyrometheus):
     """Initializes an instance of Pyrometheus for the given mechanism using the
     implementation of Pyrometheus specified by the backend option passed to
     pytest as a command line argument.
