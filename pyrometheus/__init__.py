@@ -33,13 +33,13 @@ import typing
 
 import pymbolic.primitives as p
 
+if not hasattr(p, "ExpressionNode"):
+    p.ExpressionNode = p.Expression
+
 from .codegen import CodeGenerator, CodeGenerationOptions  # noqa: F401
 from .codegen.python import PythonCodeGenerator
 from .codegen.cpp import CppCodeGenerator
 from .codegen.fortran import FortranCodeGenerator
-
-if not hasattr(p, "ExpressionNode"):
-    p.ExpressionNode = p.Expression
 
 
 def get_code_generators() -> typing.Dict[str, CodeGenerator]:
