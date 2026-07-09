@@ -1,261 +1,260 @@
 import os
 import time
-import warnings
 
-import mutationpp as mpp
+import jax
+jax.config.update("jax_enable_x64", True)
+
+import jax.numpy as jnp
 import numpy as np
+
+from pyrometheus.bandit.impl.mutation import MutationMechanism
+from pyrometheus.codegen.python_bandit import PythonBanditCodeGenerator as pyro
+
+from typing import Callable
 from matplotlib import pyplot as plt
 
 
-warnings.filterwarnings(
-    "ignore",
-    category=DeprecationWarning,
-    message="Conversion of an array with ndim > 0 to a scalar*",
-)
+def make_mechanism(lib_name, pyro_np, hardcode_params=True,
+                   reference_temperature=1.0e4):
 
-
-def make_mixture():
     data_dir = os.environ.get("MUTATION_DB")
+
     if data_dir is None:
-        raise RuntimeError("Please set MUTATION_DB to the Mutation++ data directory.")
+        raise RuntimeError("Please set MUTATION_DB.")
 
-    mpp.GlobalOptions.dataDirectory(data_dir)
+    mutation_mech = MutationMechanism(
+        file_name=os.environ.get("MUTATION_MIXTURE", "air_5"),
+        data_dir=data_dir,
+        pyro_np=pyro_np,
+        hardcode_params=hardcode_params,
+        reference_temperature=reference_temperature,
+    )
 
-    opts = mpp.MixtureOptions("air_5")
-    mix = mpp.Mixture(opts)
-
-    return mix
-
-
-def rhs(mix, rhoi, temperature_vec, state_model):
-    rhoi_ = np.maximum(rhoi, 1.0e-300)
-    rhoi_ = np.ascontiguousarray(rhoi_, dtype=np.float64)
-
-    temperature_vec = np.ascontiguousarray(temperature_vec, dtype=np.float64)
-
-    mix.setState(rhoi_, temperature_vec, state_model)
-    return mix.netProductionRates()
+    return mutation_mech
 
 
-def finite_difference_jacobian(residual, state, state_prev, step_size):
-    n = len(state)
-    jac = np.zeros((n, n))
+def make_pyro_object(pyro_cls, pyro_np):
 
-    f0 = residual(state, state_prev, step_size)
+    if pyro_np == np:
 
-    rho_scale = max(np.sum(state), 1.0e-30)
+        class PyroNumPy(pyro_cls):
 
-    for j in range(n):
-        h = 1.0e-8 * max(abs(state[j]), rho_scale)
+            def _pyro_make_array(self, res_list):
+                return np.stack(res_list)
 
-        state_pert = state.copy()
-        state_pert[j] += h
+        return PyroNumPy(pyro_np)
 
-        fj = residual(state_pert, state_prev, step_size)
+    elif pyro_np == jnp:
 
-        jac[:, j] = (fj - f0) / h
+        class PyroJAX(pyro_cls):
 
-    return jac
+            def _pyro_make_array(self, res_list):
+                array = pyro_np.empty_like(
+                    pyro_np.array(res_list)
+                )
+
+                for idx in range(len(res_list)):
+                    array = array.at[idx].set(res_list[idx])
+
+                return array
+
+        return PyroJAX(pyro_np)
+
+    else:
+        raise ValueError(f"This example does not support {pyro_np}")
 
 
-def crank_nicolson_step(mix, state, step_size, temperature_vec, state_model):
-    state_prev = state.copy()
+def _newton_loop(fn: Callable,
+                 jac: Callable,
+                 state: jnp.ndarray,
+                 state_prev: jnp.ndarray,
+                 step_size: jnp.float64):
 
-    rhs_prev = rhs(mix, state_prev, temperature_vec, state_model)
-
-    def residual(state_current, state_old, dt):
-        rhs_current = rhs(mix, state_current, temperature_vec, state_model)
-
-        return (
-            state_current
-            - state_old
-            - 0.5 * dt * (rhs_current + rhs_prev)
-        )
-
-    tol = 1.0e-10
+    tol = 1.0e-8
     max_iter = 40
 
-    state_new = state.copy()
-    err = np.inf
-
-    for it in range(max_iter):
-        res = residual(state_new, state_prev, step_size)
-
-        jac = finite_difference_jacobian(
-            residual,
-            state_new,
-            state_prev,
-            step_size,
+    def cond_fn(carry):
+        _, it, delta = carry
+        return jnp.logical_and(
+            delta > tol,
+            it < max_iter
         )
 
-        try:
-            delta = np.linalg.solve(jac, -res)
-        except np.linalg.LinAlgError:
-            delta = np.linalg.lstsq(jac, -res, rcond=None)[0]
+    def body_fn(carry):
+        state, it, _ = carry
 
-        state_new = state_new + delta
-        state_new = np.maximum(state_new, 1.0e-300)
-        err = np.linalg.norm(delta)
+        v = jnp.linalg.solve(
+            jac(state, state_prev, step_size),
+            -fn(state, state_prev, step_size)
+        )
 
-        if err < tol:
-            return state_new, it + 1, err
+        return tuple((state + v, it + 1, jnp.linalg.norm(v)))
 
-    return state_new, max_iter, err
+    carry_init = (
+        state,
+        jnp.array(0, dtype=jnp.int32),
+        jnp.array(jnp.inf)
+    )
+
+    return jax.lax.while_loop(
+        cond_fn,
+        body_fn,
+        carry_init
+    )
 
 
-def time_march(mix, num_steps, step_size, initial_state, temperature_vec):
-    ns = mix.nSpecies()
+@jax.jit
+def one_step(state, state_prev, step_size):
 
-    state_model = 1
+    def rhs(state):
 
-    sol = np.empty((num_steps + 1, ns))
-    sol[0, :] = initial_state.copy()
+        density = jnp.sum(state)
+        mass_fractions = state / density
 
-    state = initial_state.copy()
+        w_dot = pyro_gas.get_net_production_rates(
+            density, temperature, mass_fractions
+        )
 
-    print_every = max(1, int(os.environ.get("PRINT_EVERY", "100")))
+        return w_dot * pyro_gas.molecular_weights
+
+    jac = jax.jacfwd(rhs)
+
+    def crank_nicolson_fn(state, state_prev, step_size):
+        return (
+            state - state_prev
+            - 0.5 * step_size *
+            (rhs(state) + rhs(state_prev))
+        )
+
+    def crank_nicolson_jac(state, state_prev, step_size):
+        return jnp.eye(pyro_gas.num_species) - 0.5 * step_size * jac(state)
+
+    return _newton_loop(
+        crank_nicolson_fn,
+        crank_nicolson_jac,
+        state,
+        state_prev,
+        step_size
+    )
+
+
+def time_march(num_steps: int,
+               step_size: jnp.float64,
+               initial_state: jnp.ndarray,):
+
+    sol = np.empty((num_steps + 1, pyro_gas.num_species))
+    sol[0] = initial_state.copy()
+
+    state = initial_state
 
     for step in range(num_steps):
-        t0 = time.time()
 
-        state, newton_it, newton_err = crank_nicolson_step(
-            mix,
-            state,
-            step_size,
-            temperature_vec,
-            state_model,
+        state_prev = state
+
+        _t_step = time.time()
+
+        state, newton_it, newton_err = one_step(
+            state, state_prev, step_size
         )
 
-        sol[step + 1, :] = state
+        state.block_until_ready()
 
-        elapsed = time.time() - t0
+        _t_step = time.time() - _t_step
 
-        if step % print_every == 0:
-            total_rho = np.sum(state)
-            min_rhoi = np.min(state)
-            print(
-                f"Step {step:6d}: "
-                f"Newton it = {newton_it:2d}, "
-                f"err = {newton_err:.3e}, "
-                f"rho = {total_rho:.6e}, "
-                f"min rhoi = {min_rhoi:.3e}, "
-                f"cost = {elapsed:.4e} s"
-            )
+        print(f"Step {step}: cost {_t_step:.4e} s")
+
+        sol[step + 1] = state.copy()
 
     return sol
 
 
-def main():
-    mix = make_mixture()
+if __name__ == "__main__":
 
-    ns = mix.nSpecies()
-    nT = mix.nEnergyEqns()
+    lib_name = "mutation"
 
-    species_names = [mix.speciesName(i) for i in range(ns)]
-    molecular_weights = np.array([mix.speciesMw(i) for i in range(ns)])
-
-    print("Species:", species_names)
-    print("Molecular weights:", molecular_weights)
-    print("nEnergyEqns:", nT)
-
-    cold_temp = 300.0
+    cold_temp = 300
     bath_temp = 1.0e4
     pressure = 1.0e3
 
-    temperature_vec = bath_temp * np.ones(nT)
-
-    mole_fractions = np.zeros(ns)
-    mole_fractions[mix.speciesIndex("O2")] = 0.21
-    mole_fractions[mix.speciesIndex("N2")] = 0.79
-
-    mass_fractions = (
-        molecular_weights * mole_fractions
-        / np.sum(molecular_weights * mole_fractions)
+    mech = make_mechanism(
+        lib_name,
+        np,
+        hardcode_params=True,
+        reference_temperature=bath_temp,
     )
 
-    gas_constant = 8.31446261815324
+    pyro_cls = pyro.get_thermochem_class(mech)
+    pyro_gas = make_pyro_object(pyro_cls, jnp)
 
-    mix_molecular_weight = 1.0 / np.sum(
-        mass_fractions / molecular_weights
+    temperature = bath_temp * jnp.ones(pyro_gas.num_temperatures)
+
+    mole_fractions = jnp.zeros(pyro_gas.num_species)
+
+    mole_fractions = mole_fractions.at[mech.species_index("O2")].set(0.21)
+    mole_fractions = mole_fractions.at[mech.species_index("N2")].set(0.79)
+
+    mass_fractions = pyro_gas.molecular_weights * mole_fractions / jnp.sum(
+        pyro_gas.molecular_weights * mole_fractions
+    )
+
+    mix_molecular_weight = 1 / jnp.sum(
+        mass_fractions / pyro_gas.molecular_weights
     )
 
     density = pressure * mix_molecular_weight / (
-        gas_constant * cold_temp
+        pyro_gas.gas_constant * cold_temp
     )
 
     densities = density * mass_fractions
 
-    densities = np.ascontiguousarray(densities, dtype=np.float64)
-
-    print("Initial mixture molecular weight:", mix_molecular_weight)
-    print("Initial density:", density)
-    print("Initial mass fractions:", mass_fractions)
-    print("Initial species densities:", densities)
-
     num_steps = int(os.environ.get("NUM_STEPS", "10000"))
     step_size = float(os.environ.get("STEP_SIZE", "1.0e-8"))
 
-    print("num_steps:", num_steps)
-    print("step_size:", step_size)
-
-    sol = time_march(
-        mix,
-        num_steps,
-        step_size,
-        densities,
-        temperature_vec,
+    sol_s = time_march(
+        num_steps, step_size, densities,
     )
 
-    sol_t = step_size * np.arange(num_steps + 1)
-    sol_d = np.sum(sol, axis=1)
-    sol_y = sol / sol_d[:, None]
+    colors = ["k",
+              "orangered",
+              "mediumseagreen",
+              "royalblue",
+              "mediumpurple",]
 
-    colors = [
-        "k",
-        "orangered",
-        "mediumseagreen",
-        "royalblue",
-        "mediumpurple",
-    ]
+    sol_t = step_size * np.arange(0, num_steps + 1, 1)
+    sol_d = jnp.sum(sol_s, axis=1)
+    sol_y = sol_s / sol_d[:, None]
 
     fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+
     ax.spines[["top", "right"]].set_visible(False)
 
-    for i in range(ns):
+    for i in range(pyro_gas.num_species):
+
         ax.loglog(
-            sol_t[1:],
-            sol_y[1:, i],
-            color=colors[i % len(colors)],
+            sol_t[1:], sol_y[1:, i],
+            color=colors[i],
             linewidth=2,
-            label=species_names[i],
+            label=mech.species_name(i)
         )
 
     ax.set_xlabel("Time", fontsize=16)
     ax.set_ylabel("Mass Fractions", fontsize=16)
-    ax.legend(
-        frameon=False,
-        labelcolor="linecolor",
-        bbox_to_anchor=(0.5, 1.15),
-        loc="upper center",
-        ncol=ns,
-        fontsize=12,
-    )
 
-    plt.savefig("output_mutation.png", bbox_inches="tight")
+    ax.legend(frameon=False, labelcolor="linecolor",
+              bbox_to_anchor=(0.5, 1.15), loc="upper center",
+              ncol=pyro_gas.num_species, fontsize=12)
+
+    plt.savefig("./output_mutation.png", bbox_inches="tight",)
     plt.close()
 
     np.savetxt(
         "solution_mutation.csv",
         np.column_stack((sol_t, sol_y)),
         delimiter=",",
-        header="time," + ",".join(species_names),
+        header="time," + ",".join(
+            mech.species_name(i) for i in range(pyro_gas.num_species)
+        ),
         comments="",
     )
 
-    print("Done.")
-    print("Wrote output_mutation.png")
-    print("Wrote solution_mutation.csv")
-
-
-if __name__ == "__main__":
-    main()
+    exit()

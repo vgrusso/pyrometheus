@@ -115,6 +115,12 @@ class Thermochemistry:
             %endfor
         ])
 
+    def get_concentrations(self, density, mass_fractions):
+        return self.get_concentrations_ideal_law(
+            density,
+            mass_fractions,
+        )
+
     def get_species_specific_heats_cp_r(self, temperature):
         return self._pyro_make_array([
             %for sp_thermo in bandit_mech.species_thermo_polynomials:
@@ -221,6 +227,7 @@ class PythonBanditCodeGenerator(CodeGenerator):
 
         return code_tpl.render(
             bandit_mech=bandit_mech,
+            mech=bandit_mech,
             str_np=str_np,
             cgm=CodeGenerationMapper(),
             Variable=p.Variable,
