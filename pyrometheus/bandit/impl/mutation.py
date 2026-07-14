@@ -74,13 +74,6 @@ class Mutationpp(BaseNamespace):
         mix_options = mpp.MixtureOptions(file_name)
         self.mix = mpp.Mixture(mix_options)
 
-    def __getattr__(self, name, *args):
-        if args:
-            return getattr(self.mix, name)(*args)
-        else:
-            return getattr(self.mix, name)
-
-
 class MutationMechanism(BaseMechanism):
 
     num_temp = 2
@@ -256,14 +249,6 @@ class MutationMechanism(BaseMechanism):
         return efficiencies
 
     def _arrhenius_A_to_SI(self, A_cgs, reaction_order):
-        """
-        Mutation++ air5_Park.xml uses A units with cm, mol, s, K.
-
-        For concentrations in mol/m^3:
-            first-order:  no factor
-            second-order: cm^3/mol/s -> m^3/mol/s, factor 1e-6
-            third-order:  cm^6/mol^2/s -> m^6/mol^2/s, factor 1e-12
-        """
         return A_cgs * (1.0e-6 ** (reaction_order - 1))
 
     def _parse_mutation_mechanism_xml(self):
