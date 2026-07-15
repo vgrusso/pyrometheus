@@ -11,8 +11,10 @@ from pyrometheus.bandit.chem_expr.kinetics import (
     RateCoefficient,
     make_arrhenius,
     species_production_rate_expr,
+    conc,
+    k_fwd,
+    exp,
 )
-
 
 _temp_map = {
     "translational": Variable("temperature")[0],
@@ -52,8 +54,7 @@ class MutationMechanism(BaseMechanism):
             file_name,
             data_dir=None,
             pyro_np=np,
-            hardcode_params=True,
-            reference_temperature=None,
+            hardcode_params=True
     ):
         self.hardcode_params = hardcode_params
         self.pyro_np = pyro_np
@@ -69,16 +70,6 @@ class MutationMechanism(BaseMechanism):
                 f"stored {len(self._reactions)}, "
                 f"Mutation++ reports {self.namespace.mix.num_reactions}"
             )
-        
-        if reference_temperature is None:
-            reference_temperature = float(
-                os.environ.get("MUTATION_REFERENCE_T", "10000.0")
-            )
-        self.reference_temperature = float(reference_temperature)
-            
-        self.backward_rate_coeffs = self._compute_backward_rate_coefficients(
-            self.reference_temperature
-        )
 
         self.make_rates(hardcode_params)
         
@@ -142,16 +133,22 @@ class MutationMechanism(BaseMechanism):
     def products(self, reaction_index: int) -> List[int]:
         return self.reaction(reaction_index).products
 
-    def stoichiometric_coefficients(self, reaction_index: int) -> List[int]:
+    def stoichiometric_coefficients(
+            self, reaction_index: int) -> Tuple[List[int], List[int]]:
         reactants = self.reactants(reaction_index)
-        return [reactants.count(species_index) for species_index in reactants]
+        products = self.products(reaction_index)
+        
+        return (
+            [reactants.count(species_index) for species_index in reactants],
+            [products.count(species_index) for species_index in products],
+        )
 
     def participation_set(self, species_id: Union[int, str]) -> Tuple[List[int]]:
-
+        
         if isinstance(species_id, int):
             assert species_id < self.num_species
             species_index = species_id
-
+            
         elif isinstance(species_id, str):
             species_index = self.species_index(species_id)
 
@@ -176,7 +173,7 @@ class MutationMechanism(BaseMechanism):
         return fwd_set, rev_set
 
     def is_reversible(self, reaction_index):
-        return False
+        return True
 
     def finalize(self):
         if hasattr(self.namespace, "finalize"):
@@ -186,6 +183,96 @@ class MutationMechanism(BaseMechanism):
             "finalize",
         ):
             self.namespace.mix.finalize()
+
+    def _temperature_var(self):
+        if self.num_temp == 1:
+            return Variable("temperature")
+        return Variable("temperature")[0]
+
+    def _rrho_electronic_partition(self, rrho_data, temperature):
+        z_e = 0
+        e_e = 0
+
+        for degeneracy, theta in rrho_data["electronic_levels"]:
+            boltzmann = degeneracy * exp(-theta / temperature)
+            z_e = z_e + boltzmann
+            e_e = e_e + theta * boltzmann
+
+        return z_e, e_e
+
+    def _species_rrho_gibbs_over_rt(self, species_index):
+        temperature = self._temperature_var()
+        log = Variable("log")
+
+        rrho_data = self.namespace.mix.rrhoThermoData(species_index)
+
+        # Enthalpy contribution H/(R T)
+        h = 2.5
+
+        if rrho_data["has_rotational"]:
+            h = h + rrho_data["linearity"]
+
+        for theta in rrho_data["vibrational_temperatures"]:
+            h = h + (theta / temperature) / (
+                exp(theta / temperature) - 1.0
+            )
+
+        z_e, e_e = self._rrho_electronic_partition(rrho_data, temperature)
+        h = h + (e_e / z_e) / temperature
+
+        h = h + (
+            rrho_data["hform_over_ru"] - rrho_data["part_sst"]
+        ) / temperature
+
+        # Entropy contribution S/R
+        s = (
+            2.5 * (1.0 + log(temperature))
+            - log(self.one_atm)
+            + rrho_data["ln_qt_mw"]
+        )
+
+        if rrho_data["has_rotational"]:
+            s = s + rrho_data["linearity"] * (
+                1.0 + log(temperature) - rrho_data["ln_omega_t"]
+            )
+
+        for theta in rrho_data["vibrational_temperatures"]:
+            fac = exp(theta / temperature)
+            s = s + theta / (temperature * (fac - 1.0)) - log(
+                1.0 - 1.0 / fac
+            )
+
+        s = s + (e_e / z_e) / temperature + log(z_e)
+
+        return h - s
+
+    def _species_rrho_gibbs_concentration_corrected(self, species_index):
+        temperature = self._temperature_var()
+        log = Variable("log")
+
+        g_over_rt = self._species_rrho_gibbs_over_rt(species_index)
+
+        return g_over_rt - log(
+            self.one_atm / (self.gas_constant * temperature)
+        )
+
+    def _reaction_delta_gibbs(self, reaction_index):
+        reaction = self.reaction(reaction_index)
+
+        delta_g = 0
+
+        for species_index in reaction.products:
+            delta_g = delta_g + self._species_rrho_gibbs_concentration_corrected(
+                species_index
+            )
+
+        for species_index in reaction.reactants:
+            delta_g = delta_g - self._species_rrho_gibbs_concentration_corrected(
+                species_index
+            )
+
+        return delta_g
+            
 
     def make_rate_coefficient(self, reaction_index, hardcode_params):
         reaction = self.reaction(reaction_index)
@@ -230,55 +317,9 @@ class MutationMechanism(BaseMechanism):
             
         return k_fwd, params
         
-    def _compute_backward_rate_coefficients(self, temperature):
-        ru = self.gas_constant
-        one_atm = self.one_atm
-        
-        mix = self.namespace.mix
-        
-        k_fwd = np.empty(self.num_reactions, dtype=np.float64)
-        
-        for reaction_index, reaction in enumerate(self.reactions):
-            rate = reaction.rate_law()
-            k_fwd[reaction_index] = np.exp(
-                rate.log_pre_exponential
-                + rate.exponent * np.log(temperature)
-                - rate.activation_temperature / temperature
-            )
-            
-        molecular_weights = self.molecular_weights
-        
-        g_st_mass = np.asarray(
-            mix.getSTGibbsMass(float(temperature)),
-            dtype=np.float64,
-        )
-        
-        g_over_rt = g_st_mass * molecular_weights / (ru * temperature)
-        
-        correction = np.log(one_atm / (ru * temperature))
-        g = g_over_rt - correction
-        
-        k_bwd = np.empty(self.num_reactions, dtype=np.float64)
-        
-        for reaction_index, reaction in enumerate(self.reactions):
-            delta_g = 0.0
-
-            for species_index in reaction.products:
-                delta_g += g[species_index]
-
-            for species_index in reaction.reactants:
-                delta_g -= g[species_index]
-                    
-            k_bwd[reaction_index] = k_fwd[reaction_index] * np.exp(delta_g)
-
-        return k_bwd
-
-
     def _concentration_product(self, species_indices):
-        conc = Variable("concentrations")
-
         factor = 1.0
-
+        
         for species_index in sorted(set(species_indices)):
             nu = species_indices.count(species_index)
             factor = factor * conc[species_index] ** nu
@@ -286,53 +327,35 @@ class MutationMechanism(BaseMechanism):
         return factor
 
     def _third_body_concentration(self, reaction):
-        conc = Variable("concentrations")
-
         efficiencies = dict(reaction.efficiencies)
-
         third_body_concentration = 0.0
-
+        
         for species_index in range(self.num_species):
             alpha = efficiencies.get(species_index, 1.0)
             third_body_concentration = (
                 third_body_concentration + alpha * conc[species_index]
             )
-
+            
         return third_body_concentration
     
-    def make_mass_action_rate(self, reaction_index, hardcode_params=True):
-        rate_coeff, param_vals = self.make_rate_coefficient(
-            reaction_index,
-            hardcode_params,
-        )
-
-        if not isinstance(rate_coeff, RateCoefficient):
-            return 0
-
-        if not hardcode_params:
-            self.param_vals = (
-                np.vstack((self.param_vals, param_vals))
-                if self.param_vals.size
-                else param_vals
-            )
-
+    def make_mass_action_rate(self, reaction_index):
         reaction = self.reaction(reaction_index)
 
         reactant_factor = self._concentration_product(reaction.reactants)
         product_factor = self._concentration_product(reaction.products)
 
-        q_fwd = rate_coeff.expr * reactant_factor
+        q_fwd = k_fwd[reaction_index] * reactant_factor
 
-        k_bwd = float(self.backward_rate_coeffs[reaction_index])
+        delta_g = self._reaction_delta_gibbs(reaction_index)
+        k_bwd = k_fwd[reaction_index] * exp(delta_g)
         q_bwd = k_bwd * product_factor
 
         if reaction.is_third_body:
-            m_eff = self._third_body_concentration(reaction)
-            q_fwd = q_fwd * m_eff
-            q_bwd = q_bwd * m_eff
+            third_body_concentration = self._third_body_concentration(reaction)
+            q_fwd = third_body_concentration * q_fwd
+            q_bwd = third_body_concentration * q_bwd
 
         return q_fwd - q_bwd
-
     
     def make_species_production_rate(self, species_index):
         if isinstance(species_index, str):
