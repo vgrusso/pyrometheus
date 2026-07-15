@@ -1,13 +1,12 @@
 import os
 from typing import Union, List, Tuple
-
 import numpy as np
 import mutationpp as mpp
 
 from pymbolic.primitives import Variable
-from pymbolic import substitute
 
 from pyrometheus.bandit.general_thermochem import BaseNamespace, BaseMechanism
+
 from pyrometheus.bandit.chem_expr.kinetics import (
     RateCoefficient,
     make_arrhenius,
@@ -66,11 +65,11 @@ class MutationMechanism(BaseMechanism):
         self._reactions = list(self.namespace.mix.reactions)
         if len(self._reactions) != self.namespace.mix.num_reactions:
             raise RuntimeError(
-                "Parsed reaction count does not match Mutation++ nReactions(): "
-                f"parsed {len(self._reactions)}, "
+                "Reaction count does not match Mutation++ num_reactions: "
+                f"stored {len(self._reactions)}, "
                 f"Mutation++ reports {self.namespace.mix.num_reactions}"
             )
-
+        
         if reference_temperature is None:
             reference_temperature = float(
                 os.environ.get("MUTATION_REFERENCE_T", "10000.0")
@@ -189,9 +188,19 @@ class MutationMechanism(BaseMechanism):
             self.namespace.mix.finalize()
 
     def make_rate_coefficient(self, reaction_index, hardcode_params):
-        rate = self.reaction(reaction_index).rate_law()
-        temp = self.reaction(reaction_index).fwd_rate_coeff_temperature
+        reaction = self.reaction(reaction_index)
+        rate = reaction.rate_law()
 
+        temp = str(reaction.fwd_rate_coeff_temperature)
+        
+        if temp not in _temp_map:
+            raise ValueError(
+                f"Unknown Mutation++ rate temperature '{temp}' "
+                f"for reaction {reaction_index}"
+            )
+
+        temp_var = _temp_map[temp]
+        
         if hardcode_params:
             params = {
                 "a": rate.log_pre_exponential,
@@ -202,8 +211,9 @@ class MutationMechanism(BaseMechanism):
             k_fwd = make_arrhenius(
                 reaction_index=reaction_index,
                 params=params,
+                temperature=temp_var,
             )
-
+    
         else:
             params = np.array(
                 [
@@ -212,57 +222,57 @@ class MutationMechanism(BaseMechanism):
                     rate.activation_temperature,
                 ]
             )
-
+            
             k_fwd = make_arrhenius(
                 reaction_index=reaction_index,
+                temperature=temp_var,
             )
-
-        if temp in _temp_map:
-            k_fwd.expr = substitute(
-                k_fwd.expr,
-                {"temperature": _temp_map[temp]},
-            )
-
+            
         return k_fwd, params
-
-
-    def _set_reference_state_for_temperature(self, temperature):
-
-        mix = self.namespace.mix
-
-        ns = self.num_species
-
-        mole_fractions = np.full(ns, 1.0e-300, dtype=np.float64)
-        mole_fractions[self.species_index("N2")] = 0.79
-        mole_fractions[self.species_index("O2")] = 0.21
-        mole_fractions /= np.sum(mole_fractions)
-
-        molecular_weights = self.molecular_weights
-
-        mass_fractions = (
-            molecular_weights * mole_fractions
-            / np.sum(molecular_weights * mole_fractions)
-        )
-
-        density = 1.0
-        rhoi = np.ascontiguousarray(density * mass_fractions, dtype=np.float64)
-
         
-        nT = int(getattr(mix, "num_energy_eqns", 1))
-
-        temperature_vec = np.ascontiguousarray(
-            temperature * np.ones(nT),
-            dtype=np.float64,
-        )
-
-        mix.setState(rhoi, temperature_vec, 1)
-
     def _compute_backward_rate_coefficients(self, temperature):
-        self._set_reference_state_for_temperature(temperature)
-        return np.asarray(
-            self.namespace.mix.backwardRateCoefficients(),
+        ru = self.gas_constant
+        one_atm = self.one_atm
+        
+        mix = self.namespace.mix
+        
+        k_fwd = np.empty(self.num_reactions, dtype=np.float64)
+        
+        for reaction_index, reaction in enumerate(self.reactions):
+            rate = reaction.rate_law()
+            k_fwd[reaction_index] = np.exp(
+                rate.log_pre_exponential
+                + rate.exponent * np.log(temperature)
+                - rate.activation_temperature / temperature
+            )
+            
+        molecular_weights = self.molecular_weights
+        
+        g_st_mass = np.asarray(
+            mix.getSTGibbsMass(float(temperature)),
             dtype=np.float64,
         )
+        
+        g_over_rt = g_st_mass * molecular_weights / (ru * temperature)
+        
+        correction = np.log(one_atm / (ru * temperature))
+        g = g_over_rt - correction
+        
+        k_bwd = np.empty(self.num_reactions, dtype=np.float64)
+        
+        for reaction_index, reaction in enumerate(self.reactions):
+            delta_g = 0.0
+
+            for species_index in reaction.products:
+                delta_g += g[species_index]
+
+            for species_index in reaction.reactants:
+                delta_g -= g[species_index]
+                    
+            k_bwd[reaction_index] = k_fwd[reaction_index] * np.exp(delta_g)
+
+        return k_bwd
+
 
     def _concentration_product(self, species_indices):
         conc = Variable("concentrations")
