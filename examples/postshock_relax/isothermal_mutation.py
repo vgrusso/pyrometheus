@@ -26,8 +26,7 @@ def make_mechanism(lib_name, pyro_np, hardcode_params=True,
         file_name=os.environ.get("MUTATION_MIXTURE", "air_5"),
         data_dir=data_dir,
         pyro_np=pyro_np,
-        hardcode_params=hardcode_params,
-        reference_temperature=reference_temperature,
+        hardcode_params=hardcode_params
     )
 
     return mutation_mech
